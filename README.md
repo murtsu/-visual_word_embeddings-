@@ -1,4 +1,3 @@
-# visual_word_embeddings
 # Visual Word Embeddings
 
 **Cross-lingual, script-agnostic word embeddings trained on visual appearance alone.**
