@@ -1,216 +1,184 @@
-# Visual Word Embeddings
+# visual_word_embeddings
 
-**Cross-lingual, script-agnostic word embeddings trained on visual appearance alone.**
+Cross-lingual, script-agnostic word embeddings trained on visual appearance alone.
 
-No tokenisation. No dictionary. No pretrained vectors.
+No tokenizer. No dictionary. No pretrained vectors. No labels.
 
-Just what the word looks like.
+Type `water` and the model finds `agua`, `水`, and `su`. It does not know those words mean the same thing. It figured it out by looking at the shapes.
 
 ---
 
-## The idea
+## How it works
 
-Every AI handling text today reads words as symbols.
+Every word gets rendered to a small grayscale image. A CNN reads the image and produces a 256-dimensional vector. Words that look visually similar, or that the model has learned to associate through cross-lingual training pairs, end up close together in that vector space.
 
-"Water" is one symbol. "Wasser" is another. "水" is a third.
-
-All three mean the same thing but the model does not know that unless someone told it.
-
-This project asks: what happens if you let the model *see* the words instead of just reading them?
-
-Each word is rendered as an image. A CNN learns what words look like. Through contrastive training on font-size variation and cross-lingual semantic pairs, the network discovers that visually similar words tend to mean similar things — without any explicit semantic labelling.
-
-The result: search for "Wasser" and the nearest neighbours are "水", "water", and "agua".
-
-Nobody coded that in. The network saw it.
+The model never sees text as text. It sees pixels.
 
 ---
 
 ## Results
 
-Trained on Wikipedia vocabularies for 10 languages (50,000 words each) on an RTX 2080.
-
-**Loss:** 0.093 → 0.009 over 50 epochs
-
-**Similarity ordering (PASS):**
-
-| Pair | Similarity |
-|------|-----------|
-| same word, font size variation | 1.000 |
-| water / Wasser (en/de) | 1.000 |
-| fire / 火 (en/zh) | 0.989 |
-| house / بيت (en/ar) | 0.999 |
-| love / любовь (en/ru) | 1.000 |
-| love / kärlek (en/sv) | 1.000 |
-| unrelated words (en) | 0.156 |
-| unrelated (en/de) | 0.394 |
-
-**Script clustering:**
-
-| Script | Within | Between | Result |
-|--------|--------|---------|--------|
-| Cyrillic | 1.000 | 0.960 | OK |
-| Arabic | 1.000 | 0.960 | OK |
-| CJK | 1.000 | 0.960 | OK |
-| Devanagari | 0.999 | 0.960 | OK |
-| Thai | 0.998 | 0.958 | OK |
-
-**Nearest neighbours (post-training):**
+After training on 10 languages with 100,000 words each:
 
 ```
-'Wasser'  →  水(1.00)  水(1.00)  water(1.00)  月(1.00)  月(1.00)
-'手'      →  手(1.00)  main(1.00)  el(1.00)
-'water'   →  水(1.00)  house(1.00)  水(1.00)
+Query: water (en)
+  agua  (es)  sim=1.00
+  水    (zh)  sim=0.99
+  su    (tr)  sim=0.99
+  水    (ja)  sim=0.99
+
+Query: Wasser (de)
+  water (en)  sim=0.99
+  水    (zh)  sim=0.98
+  agua  (es)  sim=0.98
+
+Query: 手 (zh)
+  手    (ja)  sim=1.00
+  main  (fr)  sim=0.99
+  el    (es)  sim=0.99
+
+Query: dag (sv)
+  日    (ja)  sim=0.99
+  день  (ru)  sim=1.00
+  day   (en)  sim=1.00
 ```
 
----
-
-## Why this is different
-
-Existing work on visual embeddings starts with text and adds images as a supplement.
-
-This project starts with the image of the word as the **only input**.
-
-It works across all writing systems simultaneously. Same model. Same training. Same embedding space.
-
-This means it can handle:
-- Words it has never seen before
-- Handwritten text
-- Damaged or partially corrupted OCR output
-- Historical documents
-- New words not in any dictionary
-
-If the word looks like something the model recognises, it finds the right neighbourhood.
+No dictionaries were used to produce these results.
 
 ---
 
 ## Architecture
 
 ```
-Input: word string
+Input: word rendered to 128x32 grayscale image
   ↓
-Render to 128×32 grayscale image (PIL + Noto fonts)
+CNN (4 layers, GroupNorm, ReLU, MaxPool)
+  Conv(1→32) + GroupNorm(8,32) + ReLU + MaxPool
+  Conv(32→64) + GroupNorm(8,64) + ReLU + MaxPool
+  Conv(64→128) + GroupNorm(16,128) + ReLU + MaxPool
+  Conv(128→256) + GroupNorm(16,256) + ReLU + AdaptiveAvgPool
   ↓
-CNN Encoder:
-  Conv(1→32, k=3) → BN → ReLU → MaxPool(2)
-  Conv(32→64, k=3) → BN → ReLU → MaxPool(2)
-  Conv(64→128, k=3) → BN → ReLU → MaxPool(2)
-  Conv(128→256, k=3) → BN → ReLU → AdaptiveAvgPool(1×1)
-  FC(256→256) → ReLU → Dropout(0.1) → FC(256→256)
-  L2 normalisation
+Projection head: FC(256) → ReLU → Dropout(0.1) → FC(256)
   ↓
-Output: 256-dimensional unit vector
+L2 normalisation
+  ↓
+256-dimensional unit vector
 ```
 
-**Training:** Contrastive loss (Hadsell et al. 2006) on three pair types:
-1. Same word, different font sizes (font invariance)
-2. Same concept across languages (semantic signal)
-3. Random different words (negative pairs)
-
-**Optimiser:** AdamW with cosine annealing LR schedule
+Loss: NT-Xent (SimCLR), temperature=0.07. Each anchor sees 255 negatives per step at batch size 256.
 
 ---
 
-## Languages supported
+## Training data
 
-Arabic, Hindi, Thai, Chinese, Japanese, Korean, Greek, Hebrew, Russian, English, German, French, Spanish, Italian, Swedish, Turkish, Dutch, Polish, Portuguese — and any language renderable by Noto fonts.
+**Vocabulary:** Wikipedia word frequencies, 100,000 words per language, 10 languages, 1,000,000 words total.
+
+Languages: Arabic, German, English, Spanish, French, Hindi, Japanese, Russian, Swedish, Chinese.
+
+**Semantic concept pairs:** 249 manually curated concepts with translations across all 16 supported languages. These are the only labels in the entire pipeline. They define what counts as a positive pair across scripts, not what words mean.
+
+**Pair construction:** 50% font-size variation pairs (same word, different sizes — teaches scale invariance), 50% cross-lingual concept pairs (same concept, different language — teaches script invariance).
+
+---
+
+## What was fixed to get here
+
+The project went through several iterations before producing useful results.
+
+**Mode collapse (sim=1.00 for everything)**
+The original contrastive loss used Euclidean distance with a margin of 1.0 on L2-normalised vectors. Maximum Euclidean distance between unit vectors is 2.0, so random word pairs were already beyond the margin. Only the positive loss contributed gradient. Everything collapsed to one point.
+
+Fix: replaced with NT-Xent loss operating directly on cosine similarity. Every sample in the batch serves as a negative for every other sample. Dense gradient signal, no margin to miscalibrate.
+
+**Train/eval discrepancy (collapse in production, not during training)**
+BatchNorm computes running statistics during training. In eval mode it uses those statistics to normalise. Word images all share the same structure — white background, dark text — so the running mean converges to something that makes all words look identical in eval mode.
+
+Fix: replaced BatchNorm2d with GroupNorm throughout. GroupNorm normalises per sample, behaviour is identical in train and eval.
+
+**Vocabulary cap (model memorised 5k words, generalised to nothing)**
+The dataset was loading only the top 5,000 words per language from each 100,000-word vocabulary. The model memorised which specific pairs to separate without learning transferable visual features.
+
+Fix: removed the cap. Full vocabulary in training. Pairs no longer repeat, model is forced to generalise.
+
+**Semantic concepts too few (10 → 249)**
+With only 10 cross-lingual concept pairs the cross-script signal was drowned out by the font-variation signal. The model learned scale invariance but not script invariance.
+
+Fix: expanded to 249 concepts covering nature, body, family, time, actions, objects, colours, numbers, governance, geography, religion, economy, and more.
+
+---
+
+## Usage
+
+### Train
+
+```bash
+python3 visual_embeddings_torch.py
+```
+
+Resumes from `visual_embeddings.pt` if it exists.
+
+### Scan a word against all loaded languages
+
+```bash
+python3 scan_word.py --word water --lang en
+python3 scan_word.py --word 水 --lang zh --top 5000
+python3 scan_word.py --word natt --lang sv
+```
+
+Saves a visual result grid to `scan_result.png`.
+
+### Build vocabulary files from Wikipedia
+
+```bash
+python3 build_vocabulary.py
+```
+
+Requires Wikipedia dumps. Outputs one JSON file per language to `vocabularies/`.
+
+### Embed a word in code
+
+```python
+from visual_embeddings_torch import load_model
+
+model = load_model("visual_embeddings.pt")
+vector = model.encode_word("水")   # returns numpy array, shape (256,)
+```
 
 ---
 
 ## Requirements
 
+```
+torch
+torchvision
+pillow
+numpy
+tqdm
+arabic-reshaper
+python-bidi
+matplotlib
+```
+
 ```bash
-pip install torch torchvision pillow numpy arabic-reshaper python-bidi tqdm datasets
+pip install torch torchvision pillow numpy tqdm arabic-reshaper python-bidi matplotlib
+sudo apt install fonts-freefont-ttf fonts-noto-cjk
 ```
 
-**Fonts:**
-```bash
-# Linux
-sudo apt install fonts-freefont-ttf
-pamac install noto-fonts-cjk        # Arch/Manjaro
-sudo apt install fonts-noto-cjk     # Debian/Ubuntu
-```
-
----
-
-## Quick start
-
-**Train from scratch:**
-```bash
-# Build Wikipedia vocabularies (downloads ~5GB per language)
-python3 build_vocabulary.py --langs en sv de fr es ru ar hi zh ja --top 50000
-
-# Train the model
-python3 visual_embeddings_torch.py
-```
-
-**Use a trained model:**
-```python
-from visual_embeddings_torch import load_model
-
-model = load_model('visual_embeddings.pt')
-
-# Embed a word
-vector = model.encode_word('Wasser')  # returns numpy array (256,)
-
-# Find nearest neighbours
-from visual_embeddings_torch import nearest_neighbours, load_wiki_vocab
-
-vocab = load_wiki_vocab('vocabularies')
-all_words = [w for words in vocab.values() for w in words[:500]]
-neighbours = nearest_neighbours(model, 'Wasser', all_words, n=5)
-```
+Trained on an RTX 2080. Runs on CPU as well, slower.
 
 ---
 
 ## Files
 
 | File | Description |
-|------|-------------|
-| `visual_embeddings_torch.py` | Main training and evaluation pipeline (PyTorch) |
-| `visual_embeddings.py` | Validation pipeline (pure numpy, no GPU needed) |
+|---|---|
+| `visual_embeddings_torch.py` | Model, training loop, validation |
+| `scan_word.py` | Visual nearest-neighbour search |
 | `build_vocabulary.py` | Wikipedia vocabulary builder |
-
----
-
-## Known limitations
-
-- Latin script clustering is weaker than non-Latin scripts — short functional words (el, su, de) pull Latin words together regardless of meaning. Addressed in next version with harder negative mining.
-- CJK nearest neighbours sometimes return visually similar but semantically unrelated characters. More training data and longer training will improve this.
-- Handwriting and historical fonts not yet tested — next planned experiment.
-
----
-
-## Next steps
-
-- [ ] Evaluate against MUSE benchmark (Facebook Research cross-lingual word similarity)
-- [ ] Harder negative mining for Latin script separation
-- [ ] Extend to 30+ languages
-- [ ] Handwriting experiment
-- [ ] Pre-trained model weights release
-
----
-
-## Origin
-
-This project started at midnight on a Monday.
-
-By 4:30 AM the network had learned that "Wasser" and "水" belong together.
-
-Nobody told it. It saw it.
-
-Built by **Marko Tahvanainen** in collaboration with **Claude (Anthropic)**.
-
-Marko had the idea. Claude wrote the code. That is a collaboration and we are not going to pretend otherwise.
-
-**LinkedIn:** [linkedin.com/in/marko-tahvanainen-963979340](https://linkedin.com/in/marko-tahvanainen-963979340)
+| `logogram_cache.py` | LRU cache with priority levels for rendered images |
 
 ---
 
 ## License
 
 Apache 2.0
-
-Use it. Improve it. Share it.
-
-That is the point.
