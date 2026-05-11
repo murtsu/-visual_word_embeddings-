@@ -81,9 +81,68 @@ Languages: Arabic, German, English, Spanish, French, Hindi, Japanese, Russian, S
 
 ---
 
-## What was fixed to get here
+## Adding new scripts from scanned images
 
-The project went through several iterations before producing useful results.
+The model can be extended with scanned word or glyph images — handwriting, historical documents, ancient scripts — without retraining the base model.
+
+### Prepare data
+
+Crop individual word or glyph images into a folder. No labels required.
+
+```
+data/
+  my_script/
+    images/
+      0001.png
+      0002.png
+      ...
+```
+
+For Omniglot (50 scripts, ready to use):
+
+```bash
+python get_omniglot.py                      # list available scripts
+python get_omniglot.py --alphabet Tifinagh  # prepare one script
+```
+
+### Add a script
+
+```bash
+python vwe.py add --name tifinagh --script tifinagh --images data/tifinagh/images/
+```
+
+This fine-tunes the base model on the new script with the early CNN layers frozen. The base model is not modified. The result is saved as `adapters/tifinagh.pt`.
+
+### Search
+
+Find the nearest vocabulary words for a scanned image:
+
+```bash
+python vwe.py search \
+    --image data/tifinagh/images/character01_0910_01.png \
+    --adapter tifinagh \
+    --vocab vocabularies/
+
+# Filter to specific languages
+python vwe.py search \
+    --image data/tifinagh/images/character01_0910_01.png \
+    --adapter tifinagh \
+    --vocab vocabularies/ --langs zh ja --sample 5000
+```
+
+### All commands
+
+```bash
+python vwe.py add        --name NAME --script SCRIPT --images DIR/
+python vwe.py list
+python vwe.py encode     --image FILE [--adapter NAME]
+python vwe.py neighbours --image FILE --adapter NAME
+python vwe.py search     --image FILE --adapter NAME --vocab vocabularies/
+```
+
+---
+
+## What was fixed to get here
 
 **Mode collapse (sim=1.00 for everything)**
 The original contrastive loss used Euclidean distance with a margin of 1.0 on L2-normalised vectors. Maximum Euclidean distance between unit vectors is 2.0, so random word pairs were already beyond the margin. Only the positive loss contributed gradient. Everything collapsed to one point.
@@ -107,6 +166,12 @@ Fix: expanded to 249 concepts covering nature, body, family, time, actions, obje
 
 ---
 
+## Known limitations
+
+Complex CJK characters (high stroke count) collapse to similar vectors at 128×32 resolution. Single characters and short words work well. Dense multi-stroke characters are at the resolution ceiling of the current architecture.
+
+---
+
 ## Usage
 
 ### Train
@@ -117,23 +182,13 @@ python3 visual_embeddings_torch.py
 
 Resumes from `visual_embeddings.pt` if it exists.
 
-### Scan a word against all loaded languages
-
-```bash
-python3 scan_word.py --word water --lang en
-python3 scan_word.py --word 水 --lang zh --top 5000
-python3 scan_word.py --word natt --lang sv
-```
-
-Saves a visual result grid to `scan_result.png`.
-
 ### Build vocabulary files from Wikipedia
 
 ```bash
 python3 build_vocabulary.py
 ```
 
-Requires Wikipedia dumps. Outputs one JSON file per language to `vocabularies/`.
+Outputs one JSON file per language to `vocabularies/`.
 
 ### Embed a word in code
 
@@ -156,11 +211,10 @@ numpy
 tqdm
 arabic-reshaper
 python-bidi
-matplotlib
 ```
 
 ```bash
-pip install torch torchvision pillow numpy tqdm arabic-reshaper python-bidi matplotlib
+pip install torch torchvision pillow numpy tqdm arabic-reshaper python-bidi
 sudo apt install fonts-freefont-ttf fonts-noto-cjk
 ```
 
@@ -173,9 +227,11 @@ Trained on an RTX 2080. Runs on CPU as well, slower.
 | File | Description |
 |---|---|
 | `visual_embeddings_torch.py` | Model, training loop, validation |
-| `scan_word.py` | Visual nearest-neighbour search |
 | `build_vocabulary.py` | Wikipedia vocabulary builder |
-| `logogram_cache.py` | LRU cache with priority levels for rendered images |
+| `vwe.py` | Shell: add scripts, search, encode |
+| `scan_dataset.py` | Dataset loader for scanned images |
+| `finetune_scan.py` | Fine-tuning on scan data |
+| `get_omniglot.py` | Download and prepare Omniglot scripts |
 
 ---
 
