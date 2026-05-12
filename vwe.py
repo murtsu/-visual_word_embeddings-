@@ -153,6 +153,7 @@ def cmd_add(args):
         "--output",    out,
         "--epochs",    str(args.epochs),
         "--pairs",     str(args.pairs),
+        "--batch",     str(args.batch),
         "--lr",        str(args.lr),
         "--unfreeze",  str(args.unfreeze),
         "--vocab",     args.vocab,
@@ -173,20 +174,31 @@ def cmd_list(args):
         print("No adapters yet.")
         return
 
-    print(f"{'NAME':<20} {'SCRIPT':<20} IMAGES")
-    print("-" * 55)
+    print(f"{'NAME':<20} {'TIER':<10} {'SCRIPT':<20} IMAGES")
+    print("-" * 65)
     for pt in sorted(pts):
         name = os.path.splitext(os.path.basename(pt))[0]
         mpath = manifest_path(name)
+        # Read tier from checkpoint if available
+        try:
+            ckpt = torch.load(pt, map_location="cpu")
+            tier = ckpt.get("tier", "adapter")
+            langs = ckpt.get("langs", None)
+        except Exception:
+            tier = "?"
+            langs = None
         if os.path.exists(mpath):
             with open(mpath, encoding="utf-8") as f:
                 m = json.load(f)
-            script = m.get("script", "?")
+            script   = m.get("script", "?")
             n_images = len(m.get("images", []))
+        elif langs:
+            script   = ",".join(langs)
+            n_images = "-"
         else:
-            script = "?"
+            script   = "?"
             n_images = "?"
-        print(f"{name:<20} {script:<20} {n_images}")
+        print(f"{name:<20} {tier:<10} {script:<20} {n_images}")
 
 
 def cmd_encode(args):
@@ -337,6 +349,120 @@ def cmd_search(args):
         print(f"  {sim:+.4f}  [{lang}]  {word}")
 
 
+def cmd_search_multi(args):
+    """
+    Search across multiple adapters and/or langpaks simultaneously.
+    Results show which file each match came from.
+    """
+    # Resolve all .pt files to search
+    pt_files = []
+    if args.adapters:
+        for name in args.adapters:
+            pt = adapter_path(name)
+            if not os.path.exists(pt):
+                # Try as direct path
+                if os.path.exists(name):
+                    pt = name
+                else:
+                    print(f"WARNING: adapter not found: {name}")
+                    continue
+            pt_files.append((name, pt))
+    if args.langpaks:
+        for lp in args.langpaks:
+            if not os.path.exists(lp):
+                print(f"WARNING: langpak not found: {lp}")
+                continue
+            name = os.path.splitext(os.path.basename(lp))[0]
+            pt_files.append((name, lp))
+
+    if not pt_files:
+        print("ERROR: no adapters or langpaks specified.")
+        return
+
+    # Load query image using first adapter's model
+    first_model = load_model(pt_files[0][1])
+    query_emb   = encode_image(first_model, args.image)
+
+    # Search vocab per adapter
+    scored = []
+    for name, pt in pt_files:
+        model = load_model(pt)
+        model.eval()
+
+        # Re-encode query with this model
+        q_emb = encode_image(model, args.image)
+
+        if args.vocab and os.path.isdir(args.vocab):
+            from PIL import ImageFont
+            font_path     = _find_search_font()
+            cjk_font_path = _find_search_cjk_font()
+
+            for fname in sorted(os.listdir(args.vocab)):
+                if not fname.endswith(".json"):
+                    continue
+                lang = fname[:-5]
+                if args.langs and lang not in args.langs:
+                    continue
+                with open(os.path.join(args.vocab, fname), encoding="utf-8") as f:
+                    data = json.load(f)
+                words = data.get("words", [])[:args.sample]
+                for word in words:
+                    try:
+                        fp   = cjk_font_path if _is_cjk(word) else font_path
+                        size = 28 if _is_cjk(word) else 20
+                        font = ImageFont.truetype(fp, size)
+                        t    = _render_word(word, font).unsqueeze(0).to(DEVICE)
+                        with torch.no_grad():
+                            emb = model(t).squeeze(0).cpu().numpy()
+                        scored.append((cosine_sim(q_emb, emb), name, lang, word))
+                    except Exception:
+                        continue
+
+    scored.sort(reverse=True)
+    print(f"\nQuery: {args.image}")
+    print(f"Top {args.n} results across {len(pt_files)} model(s):")
+    for sim, model_name, lang, word in scored[:args.n]:
+        print(f"  {sim:+.4f}  [{model_name}]  [{lang}]  {word}")
+
+
+def _find_search_font():
+    candidates = [
+        "/usr/share/fonts/noto/NotoSans-Regular.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    ]
+    for p in candidates:
+        if os.path.exists(p):
+            return p
+    raise RuntimeError("No font found.")
+
+
+def _find_search_cjk_font():
+    candidates = [
+        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    ]
+    for p in candidates:
+        if os.path.exists(p):
+            return p
+    return _find_search_font()
+
+
+def _render_word(word, font):
+    from PIL import Image, ImageDraw
+    import numpy as np
+    img  = Image.new("L", (IMG_W, IMG_H), color=255)
+    draw = ImageDraw.Draw(img)
+    try:
+        bbox = draw.textbbox((0, 0), word, font=font)
+        w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    except Exception:
+        w, h = IMG_W // 2, IMG_H // 2
+    draw.text((max(2, (IMG_W - w) // 2), max(2, (IMG_H - h) // 2)), word, fill=0, font=font)
+    arr = np.array(img, dtype=np.float32) / 255.0
+    return torch.from_numpy(arr).unsqueeze(0)
+
+
 # ─── MAIN ─────────────────────────────────────────────────────────────────────
 
 def main():
@@ -356,6 +482,7 @@ def main():
     p_add.add_argument("--source",   default=None,  help="Source description")
     p_add.add_argument("--epochs",   type=int,   default=20)
     p_add.add_argument("--pairs",    type=int,   default=5000)
+    p_add.add_argument("--batch",    type=int,   default=64)
     p_add.add_argument("--lr",       type=float, default=1e-4)
     p_add.add_argument("--unfreeze", type=int,   default=2)
     p_add.add_argument("--vocab",    default="vocabularies",
@@ -385,6 +512,16 @@ def main():
                        help="Filter vocab to specific language codes, e.g. --langs zh ja")
     p_sr.add_argument("--n",       type=int,   default=10,     help="Results to show (default: 10)")
 
+    # multi-search
+    p_ms = sub.add_parser("multi-search", help="Search across multiple adapters and langpaks")
+    p_ms.add_argument("--image",    required=True)
+    p_ms.add_argument("--adapters", nargs="+", default=None, help="Adapter names from adapters/")
+    p_ms.add_argument("--langpaks", nargs="+", default=None, help="Paths to langpak .pt files")
+    p_ms.add_argument("--vocab",    default="vocabularies")
+    p_ms.add_argument("--sample",   type=int, default=500)
+    p_ms.add_argument("--n",        type=int, default=10)
+    p_ms.add_argument("--langs",    nargs="+", default=None)
+
     args = parser.parse_args()
 
     if args.command == "add":
@@ -397,6 +534,8 @@ def main():
         cmd_neighbours(args)
     elif args.command == "search":
         cmd_search(args)
+    elif args.command == "multi-search":
+        cmd_search_multi(args)
     else:
         parser.print_help()
 

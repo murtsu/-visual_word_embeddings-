@@ -1,0 +1,7 @@
+We built a visual word embedding system that works across sixteen languages.
+Then we asked a better question.
+What if it only loaded the ones it actually needed.
+
+#NLP #MachineLearning #OpenSource #MultilingualAI #DeepLearning #ComputerVision #Engineering #PyTorch #AI #JobSearch
+
+https://www.linkedin.com/pulse/where-pixels-meet-meaning-across-every-languag-marko-tahvanainen-azy6f

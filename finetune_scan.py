@@ -291,12 +291,17 @@ def main():
     parser.add_argument("--vocab",     default=None,
                         help="Vocabulary dir for replay (default: none). "
                              "Pass vocabularies/ to prevent CJK forgetting.")
+    parser.add_argument("--reference", default=None,
+                        help="Langpak .pt to use as embedding anchor (Alt C). "
+                             "Use instead of --base for scripts without a dictionary.")
     args = parser.parse_args()
+
+    base_path = args.reference if args.reference else args.base
 
     print("=" * 60)
     print("FINE-TUNE ON SCAN DATA")
     print("=" * 60)
-    print(f"Base:      {args.base}")
+    print(f"Base:      {base_path}{'  (langpak reference)' if args.reference else ''}")
     print(f"Manifests: {args.manifests}")
     print(f"Output:    {args.output}")
     print(f"Epochs:    {args.epochs}  Pairs: {args.pairs}  Batch: {args.batch}")
@@ -304,7 +309,7 @@ def main():
     print(f"Device:    {DEVICE}")
     print()
 
-    model, base_ckpt = load_base(args.base)
+    model, base_ckpt = load_base(base_path)
 
     print("\nFreezing layers...")
     freeze_base_layers(model, args.unfreeze)

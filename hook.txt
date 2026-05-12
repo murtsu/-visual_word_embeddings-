@@ -1,0 +1,5 @@
+Every AI reads words as symbols.
+I let it see them as images instead.
+What it found on its own is the interesting part.
+
+#AI #MachineLearning #OpenSource #NLP #DeepLearning #MultilingualAI #Engineering
